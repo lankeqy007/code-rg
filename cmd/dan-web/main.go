@@ -1,33 +1,67 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
 var version = "dev"
 
 type webConfig struct {
-	WebToken     string `json:"web_token"`
-	Port         int    `json:"port"`
-	CPABaseURL   string `json:"cpa_base_url"`
-	CPAToken     string `json:"cpa_token"`
-	MailAPIURL   string `json:"mail_api_url"`
-	MailAPIKey   string `json:"mail_api_key"`
-	DefaultProxy string `json:"default_proxy"`
+	WebToken              string   `json:"web_token"`
+	Port                  int      `json:"port"`
+	CPABaseURL            string   `json:"cpa_base_url"`
+	CPAToken              string   `json:"cpa_token"`
+	MailAPIURL            string   `json:"mail_api_url"`
+	MailAPIKey            string   `json:"mail_api_key"`
+	DefaultProxy          string   `json:"default_proxy"`
+	UseRegistrationProxy  bool     `json:"use_registration_proxy"`
+	ManualDefaultThreads  int      `json:"manual_default_threads"`
+	ManualRegisterRetries int      `json:"manual_register_retries"`
+	RuntimeLogs           bool     `json:"runtime_logs"`
+	Domains               []string `json:"domains"`
+	AdminEmail            string   `json:"admin_email"`
+	AdminPass             string   `json:"admin_pass"`
+	EmailDomain           string   `json:"email_domain"`
+	AutoStart             *bool    `json:"auto_start"`
 }
 
 type runtimeState struct {
 	mu      sync.Mutex
 	started time.Time
 	lines   []string
+}
+
+type runnerState struct {
+	mu         sync.Mutex
+	cmd        *exec.Cmd
+	running    bool
+	startedAt  time.Time
+	lastExit   string
+	lastError  string
+	lastArgs   []string
+	lastPID    int
+	lastStopAt time.Time
+}
+
+type server struct {
+	root              string
+	cfgPath           string
+	runtimeConfigPath string
+	cfg               webConfig
+	state             *runtimeState
+	runner            *runnerState
 }
 
 func main() {
@@ -43,8 +77,19 @@ func main() {
 	if cfg.Port == 0 {
 		cfg.Port = 25666
 	}
+	if cfg.ManualDefaultThreads <= 0 {
+		cfg.ManualDefaultThreads = 20
+	}
 
 	state := &runtimeState{started: time.Now()}
+	srv := &server{
+		root:    root,
+		cfgPath: cfgPath,
+		cfg:     cfg,
+		state:   state,
+		runner:  &runnerState{},
+	}
+
 	logf(state, "dan-web starting")
 	logf(state, "root=%s", root)
 	logf(state, "web_config=%s", cfgPath)
@@ -53,6 +98,7 @@ func main() {
 	if err != nil {
 		logf(state, "config sync failed: %v", err)
 	} else {
+		srv.runtimeConfigPath = runtimeConfigPath
 		logf(state, "runtime config synced: %s", runtimeConfigPath)
 	}
 
@@ -60,30 +106,235 @@ func main() {
 		logf(state, "detected sidecar binary: %s", filepath.Join(root, "dan"))
 	}
 
+	srv.maybeAutoStart()
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, "dan-web is running")
 	})
-	mux.HandleFunc("/api/status", authMiddleware(cfg.WebToken, func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"ok": true,
-			"state": map[string]any{
-				"service":      "dan-web",
-				"version":      version,
-				"running":      true,
-				"started_at":   state.started.Format(time.RFC3339),
-				"port":         cfg.Port,
-				"display_log":  state.displayLog(),
-				"config_path":  cfgPath,
-				"runtime_path": runtimeConfigPath,
-			},
-		})
-	}))
+	mux.HandleFunc("/api/status", authMiddleware(cfg.WebToken, srv.handleStatus))
+	mux.HandleFunc("/api/start", authMiddleware(cfg.WebToken, srv.handleStart))
+	mux.HandleFunc("/api/stop", authMiddleware(cfg.WebToken, srv.handleStop))
 
 	addr := fmt.Sprintf("127.0.0.1:%d", cfg.Port)
 	logf(state, "listening on %s", addr)
 	if err := http.ListenAndServe(addr, mux); err != nil {
 		log.Fatalf("listen: %v", err)
+	}
+}
+
+func (s *server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true,
+		"state": map[string]any{
+			"service":       "dan-web",
+			"version":       version,
+			"running":       true,
+			"started_at":    s.state.started.Format(time.RFC3339),
+			"port":          s.cfg.Port,
+			"display_log":   s.state.displayLog(),
+			"config_path":   s.cfgPath,
+			"runtime_path":  s.runtimeConfigPath,
+			"runner_state":  s.runner.snapshot(),
+			"auto_starting": s.autoStartEnabled(),
+		},
+	})
+}
+
+func (s *server) handleStart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost && r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"ok": false, "error": "method not allowed"})
+		return
+	}
+
+	threads := s.cfg.ManualDefaultThreads
+	if v := strings.TrimSpace(r.URL.Query().Get("threads")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			threads = n
+		}
+	}
+
+	if err := s.startDan(threads); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "message": "started", "threads": threads})
+}
+
+func (s *server) handleStop(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost && r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"ok": false, "error": "method not allowed"})
+		return
+	}
+
+	if err := s.stopDan(); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "message": "stopped"})
+}
+
+func (s *server) autoStartEnabled() bool {
+	if s.cfg.AutoStart == nil {
+		return true
+	}
+	return *s.cfg.AutoStart
+}
+
+func (s *server) maybeAutoStart() {
+	if !s.autoStartEnabled() {
+		logf(s.state, "auto start disabled")
+		return
+	}
+	if err := s.startDan(s.cfg.ManualDefaultThreads); err != nil {
+		logf(s.state, "auto start skipped: %v", err)
+	}
+}
+
+func (s *server) startDan(threads int) error {
+	if threads <= 0 {
+		threads = s.cfg.ManualDefaultThreads
+	}
+	if threads <= 0 {
+		threads = 1
+	}
+
+	danPath := filepath.Join(s.root, "dan")
+	if _, err := os.Stat(danPath); err != nil {
+		return fmt.Errorf("dan binary not found: %s", danPath)
+	}
+
+	if len(s.cfg.Domains) == 0 {
+		return fmt.Errorf("missing domains in web_config.json/config.json; current recovered dan cannot start without domains")
+	}
+
+	args := []string{
+		"--count", strconv.Itoa(threads),
+		"--domains", strings.Join(s.cfg.Domains, ","),
+	}
+	if s.cfg.RuntimeLogs {
+		args = append(args, "--runtime-logs")
+	}
+	if s.cfg.UseRegistrationProxy && strings.TrimSpace(s.cfg.DefaultProxy) != "" {
+		args = append(args, "--proxy", s.cfg.DefaultProxy)
+	}
+	if strings.TrimSpace(s.cfg.MailAPIURL) != "" {
+		args = append(args, "--mail-api-url", s.cfg.MailAPIURL)
+	}
+	if strings.TrimSpace(s.cfg.MailAPIKey) != "" {
+		args = append(args, "--mail-api-key", s.cfg.MailAPIKey)
+	}
+	if strings.TrimSpace(s.cfg.AdminEmail) != "" {
+		args = append(args, "--admin-email", s.cfg.AdminEmail)
+	}
+	if strings.TrimSpace(s.cfg.AdminPass) != "" {
+		args = append(args, "--admin-pass", s.cfg.AdminPass)
+	}
+	if strings.TrimSpace(s.cfg.EmailDomain) != "" {
+		args = append(args, "--email-domain", s.cfg.EmailDomain)
+	}
+
+	s.runner.mu.Lock()
+	defer s.runner.mu.Unlock()
+	if s.runner.running && s.runner.cmd != nil && s.runner.cmd.Process != nil {
+		return fmt.Errorf("dan is already running with pid=%d", s.runner.cmd.Process.Pid)
+	}
+
+	cmd := exec.Command(danPath, args...)
+	cmd.Dir = s.root
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("stdout pipe: %w", err)
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return fmt.Errorf("stderr pipe: %w", err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start dan: %w", err)
+	}
+
+	s.runner.cmd = cmd
+	s.runner.running = true
+	s.runner.startedAt = time.Now()
+	s.runner.lastArgs = append([]string(nil), args...)
+	s.runner.lastPID = cmd.Process.Pid
+	s.runner.lastError = ""
+	s.runner.lastExit = ""
+
+	logf(s.state, "started dan pid=%d args=%s", cmd.Process.Pid, strings.Join(args, " "))
+
+	go s.streamLogs("dan", stdout)
+	go s.streamLogs("dan", stderr)
+	go s.waitDan(cmd)
+
+	return nil
+}
+
+func (s *server) stopDan() error {
+	s.runner.mu.Lock()
+	defer s.runner.mu.Unlock()
+
+	if !s.runner.running || s.runner.cmd == nil || s.runner.cmd.Process == nil {
+		return fmt.Errorf("dan is not running")
+	}
+
+	pid := s.runner.cmd.Process.Pid
+	if err := syscall.Kill(-pid, syscall.SIGTERM); err != nil {
+		_ = s.runner.cmd.Process.Kill()
+	}
+	s.runner.lastStopAt = time.Now()
+	logf(s.state, "stop requested for dan pid=%d", pid)
+	return nil
+}
+
+func (s *server) waitDan(cmd *exec.Cmd) {
+	err := cmd.Wait()
+
+	s.runner.mu.Lock()
+	defer s.runner.mu.Unlock()
+
+	s.runner.running = false
+	if err != nil {
+		s.runner.lastError = err.Error()
+		s.runner.lastExit = fmt.Sprintf("exited with error at %s", time.Now().Format(time.RFC3339))
+		logf(s.state, "dan exited with error: %v", err)
+	} else {
+		s.runner.lastError = ""
+		s.runner.lastExit = fmt.Sprintf("exited normally at %s", time.Now().Format(time.RFC3339))
+		logf(s.state, "dan exited normally")
+	}
+}
+
+func (s *server) streamLogs(prefix string, rc interface{ Read([]byte) (int, error) }) {
+	scanner := bufio.NewScanner(rc)
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 1024*1024)
+	for scanner.Scan() {
+		logf(s.state, "[%s] %s", prefix, scanner.Text())
+	}
+}
+
+func (r *runnerState) snapshot() map[string]any {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	pid := 0
+	if r.cmd != nil && r.cmd.Process != nil {
+		pid = r.cmd.Process.Pid
+	}
+
+	return map[string]any{
+		"running":      r.running,
+		"pid":          pid,
+		"started_at":   formatTime(r.startedAt),
+		"last_exit":    r.lastExit,
+		"last_error":   r.lastError,
+		"last_args":    append([]string(nil), r.lastArgs...),
+		"last_stop_at": formatTime(r.lastStopAt),
 	}
 }
 
@@ -179,6 +430,18 @@ func syncRuntimeConfig(root string, wc webConfig) (string, error) {
 	if wc.MailAPIKey != "" {
 		cfg["mail_api_key"] = wc.MailAPIKey
 	}
+	if len(wc.Domains) > 0 {
+		cfg["domains"] = wc.Domains
+	}
+	if wc.AdminEmail != "" {
+		cfg["admin_email"] = wc.AdminEmail
+	}
+	if wc.AdminPass != "" {
+		cfg["admin_pass"] = wc.AdminPass
+	}
+	if wc.EmailDomain != "" {
+		cfg["email_domain"] = wc.EmailDomain
+	}
 
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
@@ -246,8 +509,8 @@ func (s *runtimeState) append(line string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.lines = append(s.lines, line)
-	if len(s.lines) > 200 {
-		s.lines = s.lines[len(s.lines)-200:]
+	if len(s.lines) > 400 {
+		s.lines = s.lines[len(s.lines)-400:]
 	}
 }
 
@@ -255,4 +518,11 @@ func (s *runtimeState) displayLog() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return strings.Join(s.lines, "\n")
+}
+
+func formatTime(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.Format(time.RFC3339)
 }

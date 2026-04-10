@@ -14,6 +14,11 @@ MAIL_API_KEY=""
 THREADS="20"
 WEB_TOKEN="linuxdo"
 PORT="25666"
+DOMAINS=""
+ADMIN_EMAIL=""
+ADMIN_PASS=""
+EMAIL_DOMAIN=""
+AUTO_START="1"
 SYSTEMD="0"
 SERVICE_NAME="dan-web"
 BACKGROUND="0"
@@ -36,6 +41,11 @@ Options:
   --threads N
   --web-token TOKEN
   --port N
+  --domains CSV
+  --admin-email EMAIL
+  --admin-pass PASS
+  --email-domain DOMAIN
+  --no-auto-start
   --systemd
   --service-name NAME
   --background
@@ -57,6 +67,11 @@ while [[ $# -gt 0 ]]; do
     --threads) THREADS="${2:-}"; shift 2 ;;
     --web-token) WEB_TOKEN="${2:-}"; shift 2 ;;
     --port) PORT="${2:-}"; shift 2 ;;
+    --domains) DOMAINS="${2:-}"; shift 2 ;;
+    --admin-email) ADMIN_EMAIL="${2:-}"; shift 2 ;;
+    --admin-pass) ADMIN_PASS="${2:-}"; shift 2 ;;
+    --email-domain) EMAIL_DOMAIN="${2:-}"; shift 2 ;;
+    --no-auto-start) AUTO_START="0"; shift ;;
     --systemd) SYSTEMD="1"; shift ;;
     --service-name) SERVICE_NAME="${2:-}"; shift 2 ;;
     --background) BACKGROUND="1"; shift ;;
@@ -180,6 +195,9 @@ cat > "$INSTALL_DIR/config.json" <<EOF
   "upload_api_token": "$(json_escape "$CPA_TOKEN")",
   "mail_api_url": "$(json_escape "$MAIL_API_URL")",
   "mail_api_key": "$(json_escape "$MAIL_API_KEY")",
+  "admin_email": "$(json_escape "$ADMIN_EMAIL")",
+  "admin_pass": "$(json_escape "$ADMIN_PASS")",
+  "email_domain": "$(json_escape "$EMAIL_DOMAIN")",
   "oauth_issuer": "https://auth.openai.com",
   "oauth_client_id": "app_EMoamEEZ73f0CkXaXp7hrann",
   "oauth_redirect_uri": "http://localhost:1455/auth/callback",
@@ -196,6 +214,16 @@ cat > "$INSTALL_DIR/config/web_config.json" <<EOF
   "cpa_token": "$(json_escape "$CPA_TOKEN")",
   "mail_api_url": "$(json_escape "$MAIL_API_URL")",
   "mail_api_key": "$(json_escape "$MAIL_API_KEY")",
+  "domains": [$(DOMAINS="$DOMAINS" python3 - <<'PY'
+import json, os
+parts=[p.strip() for p in os.environ.get("DOMAINS","").split(",") if p.strip()]
+print(",".join(json.dumps(p) for p in parts))
+PY
+)],
+  "admin_email": "$(json_escape "$ADMIN_EMAIL")",
+  "admin_pass": "$(json_escape "$ADMIN_PASS")",
+  "email_domain": "$(json_escape "$EMAIL_DOMAIN")",
+  "auto_start": $([[ "$AUTO_START" == "1" ]] && printf 'true' || printf 'false'),
   "port": ${PORT}
 }
 EOF
@@ -251,4 +279,8 @@ echo "Config: $INSTALL_DIR/config/web_config.json"
 if [[ "$COMPONENT" == "dan-web" ]]; then
   echo "Status:"
   echo "  curl -s -H \"Authorization: Bearer ${WEB_TOKEN}\" http://127.0.0.1:${PORT}/api/status"
+  echo "Start:"
+  echo "  curl -s -X POST -H \"Authorization: Bearer ${WEB_TOKEN}\" http://127.0.0.1:${PORT}/api/start | jq"
+  echo "Stop:"
+  echo "  curl -s -X POST -H \"Authorization: Bearer ${WEB_TOKEN}\" http://127.0.0.1:${PORT}/api/stop | jq"
 fi
