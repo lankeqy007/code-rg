@@ -1,12 +1,17 @@
 package danapp
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	mrand "math/rand"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -406,8 +411,163 @@ func cloudmailCreateMailbox(a *App, email string) error {
 
 // cloudmailPostJSON sends a JSON POST request to the mail API.
 func cloudmailPostJSON(a *App, path string, payload map[string]string) (string, error) {
-	// Simplified: would use surf HTTP client in production
-	return "", fmt.Errorf("not implemented")
+	baseURL := normalizeAPIRoot(a.cfg.MailAPIURL)
+	if baseURL == "" {
+		return "", fmt.Errorf("mail API URL not configured")
+	}
+
+	rawURL := baseURL + path
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("marshal mail API payload: %w", err)
+	}
+
+	parentCtx := a.ctx
+	if parentCtx == nil {
+		parentCtx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parentCtx, 60*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, rawURL, bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("create mail API request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+	if a.cfg.MailAPIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+a.cfg.MailAPIKey)
+		req.Header.Set("X-API-Key", a.cfg.MailAPIKey)
+	}
+	if a.cloudmailToken != "" && path != "/tokens" {
+		req.Header.Set("X-Mailbox-Token", a.cloudmailToken)
+	}
+
+	resp, err := a.mailboxClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("mail API request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("mail API returned %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+
+	if len(respBody) == 0 {
+		return "", nil
+	}
+
+	data, err := decodeJSON(respBody)
+	if err != nil {
+		return strings.TrimSpace(string(respBody)), nil
+	}
+
+	for _, key := range []string{"token", "access_token", "mail_token", "id"} {
+		if v := mapString(data, key); v != "" {
+			return v, nil
+		}
+	}
+
+	return strings.TrimSpace(string(respBody)), nil
+}
+
+// fetchMailboxOTP fetches the latest OTP for an email address.
+func (a *App) fetchMailboxOTP(email string) (string, error) {
+	baseURL := normalizeAPIRoot(a.cfg.MailAPIURL)
+	if baseURL == "" {
+		return "", fmt.Errorf("mail API URL not configured")
+	}
+
+	parentCtx := a.ctx
+	if parentCtx == nil {
+		parentCtx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parentCtx, 60*time.Second)
+	defer cancel()
+
+	candidates := []string{
+		baseURL + "/messages?address=" + url.QueryEscape(email),
+		baseURL + "/messages?email=" + url.QueryEscape(email),
+		baseURL + "/messages",
+	}
+
+	var lastErr error
+	for _, rawURL := range candidates {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		req.Header.Set("Accept", "application/json")
+		if a.cfg.MailAPIKey != "" {
+			req.Header.Set("Authorization", "Bearer "+a.cfg.MailAPIKey)
+			req.Header.Set("X-API-Key", a.cfg.MailAPIKey)
+		}
+		if a.cloudmailToken != "" {
+			req.Header.Set("X-Mailbox-Token", a.cloudmailToken)
+		}
+
+		resp, err := a.mailboxClient.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 128*1024))
+		resp.Body.Close()
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			lastErr = fmt.Errorf("mailbox lookup %s returned %d", rawURL, resp.StatusCode)
+			continue
+		}
+
+		if otp, err := extractOTPFromMailboxResponse(respBody, email); err == nil && otp != "" {
+			return otp, nil
+		} else if err != nil {
+			lastErr = err
+		}
+	}
+
+	if lastErr != nil {
+		return "", lastErr
+	}
+	return "", nil
+}
+
+func extractOTPFromMailboxResponse(data []byte, email string) (string, error) {
+	payload, err := decodeJSON(stripUTF8BOM(data))
+	if err == nil {
+		if otp := otpFromAny(payload); otp != "" {
+			return otp, nil
+		}
+	}
+
+	return extractVerificationCode(string(data))
+}
+
+func otpFromAny(v any) string {
+	switch x := v.(type) {
+	case map[string]any:
+		for _, key := range []string{"text", "body", "html", "content", "message", "snippet"} {
+			if s := mapString(x, key); s != "" {
+				if otp, _ := extractVerificationCode(s); otp != "" {
+					return otp
+				}
+			}
+		}
+		for _, vv := range x {
+			if otp := otpFromAny(vv); otp != "" {
+				return otp
+			}
+		}
+	case []any:
+		for _, vv := range x {
+			if otp := otpFromAny(vv); otp != "" {
+				return otp
+			}
+		}
+	}
+	return ""
 }
 
 // loadCloudmailDomains loads available email domains from the mail API.

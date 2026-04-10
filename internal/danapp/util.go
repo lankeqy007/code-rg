@@ -4,7 +4,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math/big"
@@ -14,11 +13,17 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
 )
+
+var sanitizeLogNameRe = regexp.MustCompile(`[^a-zA-Z0-9._-]+`)
+
+// newRandom creates a new pseudo-random generator seeded from current time.
+func newRandom() *mrand.Rand {
+	return mrand.New(mrand.NewSource(time.Now().UnixNano()))
+}
 
 // randomName generates a random full name.
 func randomName(rnd *mrand.Rand) string {
@@ -405,6 +410,25 @@ func stripUTF8BOM(data []byte) []byte {
 		return data[3:]
 	}
 	return data
+}
+
+// runtimeLogDir returns the directory used for runtime log files.
+func runtimeLogDir(rootDir string) string {
+	return filepath.Join(rootDir, "runtime_logs")
+}
+
+// sanitizeLogName sanitizes a string for use as a filename.
+func sanitizeLogName(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "unknown"
+	}
+	s = sanitizeLogNameRe.ReplaceAllString(s, "_")
+	s = strings.Trim(s, "._-")
+	if s == "" {
+		return "unknown"
+	}
+	return s
 }
 
 // randomWildcardDomainLabel generates a random subdomain label.

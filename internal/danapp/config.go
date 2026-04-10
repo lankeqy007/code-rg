@@ -9,25 +9,25 @@ import (
 
 // Config holds all configuration for the dan application.
 type Config struct {
-	RootDir    string
-	Count      int
-	OutputFile string
-	Proxy      string
+	RootDir     string
+	Count       int
+	OutputFile  string
+	Proxy       string
 	UseEnvProxy bool
-	Domains    []string
+	Domains     []string
 
 	// Boolean flags
-	RuntimeLogs  bool
-	Cleanup      bool
-	EnableOAuth  bool
+	RuntimeLogs   bool
+	Cleanup       bool
+	EnableOAuth   bool
 	OAuthRequired bool
-	UploadTokens bool
+	UploadTokens  bool
 
 	// Mail API configuration
-	MailAPIURL string
-	MailAPIKey string
-	AdminEmail string
-	AdminPass  string
+	MailAPIURL  string
+	MailAPIKey  string
+	AdminEmail  string
+	AdminPass   string
 	EmailDomain string
 
 	// Key files
@@ -42,13 +42,13 @@ type Config struct {
 	UploadAPIToken string
 
 	// OAuth configuration
-	OAuthIssuer       string
-	OAuthClientID     string
-	OAuthRedirectURI  string
+	OAuthIssuer      string
+	OAuthClientID    string
+	OAuthRedirectURI string
 
 	// OTP retry settings
-	OTPRetryCount             int
-	OTPRetryIntervalSeconds   int
+	OTPRetryCount           int
+	OTPRetryIntervalSeconds int
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -120,13 +120,22 @@ func ParseCLI(root string) (*CLIOpts, *Config, error) {
 
 	opts := &CLIOpts{}
 	cfg := DefaultConfig(root)
+	var domainsCSV string
+
+	applyProjectConfig(&cfg, root)
+	if path := preferredWebConfigPath(root); path != "" {
+		if webConfig := readWebConfigData(path); webConfig != nil {
+			applyWebConfig(&cfg, webConfig)
+		}
+	}
+	applyRuntimeConfigFile(&cfg, root)
 
 	fs.BoolVar(&opts.Help, "help", false, "show usage")
 	fs.IntVar(&opts.Count, "count", cfg.Count, "number of accounts to register")
 	fs.StringVar(&cfg.OutputFile, "output", cfg.OutputFile, "output file for results")
 	fs.StringVar(&cfg.Proxy, "proxy", cfg.Proxy, "HTTP proxy URL")
 	fs.BoolVar(&cfg.UseEnvProxy, "env-proxy", cfg.UseEnvProxy, "use HTTP_PROXY/HTTPS_PROXY from environment")
-	fs.StringVar(&cfg.Domains, "domains", "", "comma-separated list of target domains")
+	fs.StringVar(&domainsCSV, "domains", "", "comma-separated list of target domains")
 	fs.BoolVar(&cfg.RuntimeLogs, "runtime-logs", cfg.RuntimeLogs, "enable detailed runtime logging")
 	fs.BoolVar(&cfg.Cleanup, "cleanup", cfg.Cleanup, "clean up temporary files after registration")
 	fs.BoolVar(&cfg.EnableOAuth, "oauth", cfg.EnableOAuth, "enable OAuth / Codex token fetch")
@@ -160,10 +169,15 @@ func ParseCLI(root string) (*CLIOpts, *Config, error) {
 	}
 
 	// Parse domains from comma-separated string
-	if cfg.Domains != nil {
-		parts := strings.Split(cfg.Domains, ",")
-		for i, d := range parts {
-			parts[i] = strings.TrimSpace(d)
+	if domainsCSV != "" {
+		parts := strings.Split(domainsCSV, ",")
+		cfg.Domains = cfg.Domains[:0]
+		for _, d := range parts {
+			d = strings.TrimSpace(d)
+			if d == "" {
+				continue
+			}
+			cfg.Domains = append(cfg.Domains, d)
 		}
 	}
 

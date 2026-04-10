@@ -8,3 +8,22 @@ Current snapshot includes a minimal repair of the CPA upload chain:
 - flush pending token uploads before program exit
 
 Date: 2026-04-10
+
+## Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lankeqy007/code-rg/main/install.sh | bash -s -- \
+  --install-dir "$HOME/dan-runtime" \
+  --background \
+  --cpa-base-url 'https://your-cpa.example/' \
+  --cpa-token 'your-token' \
+  --mail-api-url 'https://your-mail.example/' \
+  --mail-api-key 'your-mail-key' \
+  --threads 20
+```
+
+## Status
+
+```bash
+curl -s -H "Authorization: Bearer linuxdo" http://127.0.0.1:25666/api/status
+```

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	mrand "math/rand"
 	"sort"
 	"strings"
 	"time"
@@ -17,10 +18,10 @@ type Service struct {
 
 // Session represents a sentinel session.
 type Session struct {
-	ID     string
-	Flow   string
-	Seed   string
-	Rand   *mrand.Rand
+	ID   string
+	Flow string
+	Seed string
+	Rand *mrand.Rand
 }
 
 // NewService creates a new sentinel Service.
@@ -123,18 +124,18 @@ func (s *sdk) RequirementsToken() (string, error) {
 	winProbe := s.windowProbe()
 
 	payload := map[string]any{
-		"version":       "1.0",
-		"flow":          s.flow,
-		"navigator":     navProbe,
-		"document":      docProbe,
-		"window":        winProbe,
-		"date":          s.dateStr,
-		"probe":         probe,
-		"fingerprint":   s.config,
-		"userAgent":     s.userAgent,
+		"version":             "1.0",
+		"flow":                s.flow,
+		"navigator":           navProbe,
+		"document":            docProbe,
+		"window":              winProbe,
+		"date":                s.dateStr,
+		"probe":               probe,
+		"fingerprint":         s.config,
+		"userAgent":           s.userAgent,
 		"hardwareConcurrency": 8,
-		"language":      "en-US",
-		"languages":     []string{"en-US", "en"},
+		"language":            "en-US",
+		"languages":           []string{"en-US", "en"},
 	}
 
 	return mustB64JSON(payload), nil
@@ -144,9 +145,9 @@ func (s *sdk) RequirementsToken() (string, error) {
 func (s *sdk) EnforcementToken(requirementsToken string) (string, error) {
 	payload := map[string]any{
 		"requirements_token": requirementsToken,
-		"flow":              s.flow,
-		"timestamp":         time.Now().UnixMilli(),
-		"seed":              s.seed,
+		"flow":               s.flow,
+		"timestamp":          time.Now().UnixMilli(),
+		"seed":               s.seed,
 	}
 
 	return mustB64JSON(payload), nil
@@ -160,16 +161,16 @@ func (s *sdk) solve(challenge string) (string, error) {
 // navigatorProbe returns navigator properties.
 func (s *sdk) navigatorProbe() map[string]any {
 	return map[string]any{
-		"userAgent":     s.userAgent,
-		"language":      "en-US",
-		"languages":     []string{"en-US", "en"},
-		"platform":      "Win32",
-		"vendor":        "Google Inc.",
+		"userAgent":           s.userAgent,
+		"language":            "en-US",
+		"languages":           []string{"en-US", "en"},
+		"platform":            "Win32",
+		"vendor":              "Google Inc.",
 		"hardwareConcurrency": 8,
-		"maxTouchPoints":   0,
-		"webdriver":     false,
-		"cookieEnabled": true,
-		"onLine":        true,
+		"maxTouchPoints":      0,
+		"webdriver":           false,
+		"cookieEnabled":       true,
+		"onLine":              true,
 	}
 }
 
@@ -187,14 +188,14 @@ func (s *sdk) documentProbe() map[string]any {
 // windowProbe returns window properties.
 func (s *sdk) windowProbe() map[string]any {
 	return map[string]any{
-		"innerWidth":     1920,
-		"innerHeight":    969,
-		"outerWidth":     1920,
-		"outerHeight":    1040,
-		"screenX":        0,
-		"screenY":        0,
-		"pageXOffset":    0,
-		"pageYOffset":    0,
+		"innerWidth":       1920,
+		"innerHeight":      969,
+		"outerWidth":       1920,
+		"outerHeight":      1040,
+		"screenX":          0,
+		"screenY":          0,
+		"pageXOffset":      0,
+		"pageYOffset":      0,
 		"devicePixelRatio": 1,
 		"screen": map[string]any{
 			"width":       1920,

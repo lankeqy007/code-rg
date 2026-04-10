@@ -19,7 +19,7 @@ func main() {
 		fatalf("%v", err)
 	}
 
-	app, err := danapp.NewApp(cfg)
+	app, err := danapp.NewApp(*cfg)
 	if err != nil {
 		fatalf("init app: %v", err)
 	}
@@ -43,11 +43,30 @@ func detectProjectRoot() (string, error) {
 	}
 
 	// Prefer cwd if it looks like a valid project root
-	if _, err := os.Stat(filepath.Join(cwd, "web_config.json")); err == nil {
+	if looksLikeProjectRoot(cwd) {
 		return cwd, nil
 	}
 
+	if looksLikeProjectRoot(exeDir) {
+		return exeDir, nil
+	}
+
 	return root, nil
+}
+
+func looksLikeProjectRoot(dir string) bool {
+	candidates := []string{
+		filepath.Join(dir, "web_config.json"),
+		filepath.Join(dir, "config", "web_config.json"),
+		filepath.Join(dir, "config.json"),
+		filepath.Join(dir, "config", "config.json"),
+	}
+	for _, path := range candidates {
+		if _, err := os.Stat(path); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func mustGetwd() (string, error) {

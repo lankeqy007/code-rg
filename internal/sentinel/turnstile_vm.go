@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"math"
 	mrand "math/rand"
-	"strings"
+	"time"
 )
 
 // turnstileSolver implements the Cloudflare Turnstile VM solver.
@@ -85,20 +85,20 @@ func (t *turnstileSolver) initRuntime(profile map[string]any) {
 
 	// Register 1: navigator-like object
 	t.setReg(1, map[string]any{
-		"userAgent": t.userAgent,
-		"platform":  "Win32",
-		"language":  "en-US",
-		"languages": []string{"en-US", "en"},
+		"userAgent":           t.userAgent,
+		"platform":            "Win32",
+		"language":            "en-US",
+		"languages":           []string{"en-US", "en"},
 		"hardwareConcurrency": 8,
-		"webdriver": false,
+		"webdriver":           false,
 	})
 
 	// Register 2: window-like object
 	t.setReg(2, map[string]any{
-		"innerWidth":     1920,
-		"innerHeight":    969,
-		"outerWidth":     1920,
-		"outerHeight":    1040,
+		"innerWidth":       1920,
+		"innerHeight":      969,
+		"outerWidth":       1920,
+		"outerHeight":      1040,
 		"devicePixelRatio": 1.0,
 	})
 
@@ -122,27 +122,27 @@ func (t *turnstileSolver) initRuntime(profile map[string]any) {
 	// Register 5: performance-like object
 	t.setReg(5, map[string]any{
 		"timing": map[string]any{
-			"navigationStart":     0,
-			"unloadEventStart":    0,
-			"unloadEventEnd":      0,
-			"redirectStart":       0,
-			"redirectEnd":         0,
-			"fetchStart":          10,
-			"domainLookupStart":   15,
-			"domainLookupEnd":     20,
-			"connectStart":        20,
-			"connectEnd":          50,
-			"secureConnectionStart": 25,
-			"requestStart":        50,
-			"responseStart":       100,
-			"responseEnd":         150,
-			"domLoading":          200,
-			"domInteractive":      500,
+			"navigationStart":            0,
+			"unloadEventStart":           0,
+			"unloadEventEnd":             0,
+			"redirectStart":              0,
+			"redirectEnd":                0,
+			"fetchStart":                 10,
+			"domainLookupStart":          15,
+			"domainLookupEnd":            20,
+			"connectStart":               20,
+			"connectEnd":                 50,
+			"secureConnectionStart":      25,
+			"requestStart":               50,
+			"responseStart":              100,
+			"responseEnd":                150,
+			"domLoading":                 200,
+			"domInteractive":             500,
 			"domContentLoadedEventStart": 500,
 			"domContentLoadedEventEnd":   501,
-			"domComplete":         1000,
-			"loadEventStart":      1000,
-			"loadEventEnd":        1001,
+			"domComplete":                1000,
+			"loadEventStart":             1000,
+			"loadEventEnd":               1001,
 		},
 	})
 
@@ -188,41 +188,41 @@ func (t *turnstileSolver) buildWindow(profile map[string]any) map[string]any {
 	window := map[string]any{
 		// Navigator properties
 		"navigator": map[string]any{
-			"userAgent":     t.userAgent,
-			"platform":      "Win32",
-			"language":      "en-US",
-			"languages":     []string{"en-US", "en"},
+			"userAgent":           t.userAgent,
+			"platform":            "Win32",
+			"language":            "en-US",
+			"languages":           []string{"en-US", "en"},
 			"hardwareConcurrency": 8,
-			"maxTouchPoints":   0,
-			"webdriver":     false,
-			"cookieEnabled": true,
-			"onLine":        true,
-			"vendor":        "Google Inc.",
-			"vendorSub":     "",
-			"productSub":    "20030107",
-			"appVersion":    "5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-			"appName":       "Netscape",
-			"appCodeName":   "Mozilla",
-			"product":       "Gecko",
-			"doNotTrack":    nil,
+			"maxTouchPoints":      0,
+			"webdriver":           false,
+			"cookieEnabled":       true,
+			"onLine":              true,
+			"vendor":              "Google Inc.",
+			"vendorSub":           "",
+			"productSub":          "20030107",
+			"appVersion":          "5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+			"appName":             "Netscape",
+			"appCodeName":         "Mozilla",
+			"product":             "Gecko",
+			"doNotTrack":          nil,
 			"connection": map[string]any{
-				"effectiveType":      "4g",
-				"rtt":               50,
-				"downlink":          10,
-				"saveData":          false,
+				"effectiveType": "4g",
+				"rtt":           50,
+				"downlink":      10,
+				"saveData":      false,
 			},
-			"plugins":    []any{},
-			"mimeTypes":  []any{},
-			"bluetooth":  nil,
-			"clipboard":  map[string]any{},
-			"credentials": map[string]any{},
-			"keyboard":   map[string]any{},
+			"plugins":      []any{},
+			"mimeTypes":    []any{},
+			"bluetooth":    nil,
+			"clipboard":    map[string]any{},
+			"credentials":  map[string]any{},
+			"keyboard":     map[string]any{},
 			"mediaDevices": map[string]any{},
-			"permissions": map[string]any{},
+			"permissions":  map[string]any{},
 			"presentation": nil,
-			"scheduling":  nil,
-			"storage":     map[string]any{},
-			"usb":         nil,
+			"scheduling":   nil,
+			"storage":      map[string]any{},
+			"usb":          nil,
 			"windowControlsOverlay": map[string]any{
 				"visible": false,
 			},
@@ -243,28 +243,28 @@ func (t *turnstileSolver) buildWindow(profile map[string]any) map[string]any {
 		},
 
 		// Window dimensions
-		"innerWidth":     1920,
-		"innerHeight":    969,
-		"outerWidth":     1920,
-		"outerHeight":    1040,
-		"screenX":        0,
-		"screenY":        0,
-		"screenLeft":     0,
-		"screenTop":      0,
-		"pageXOffset":    0,
-		"pageYOffset":    0,
-		"scrollX":        0,
-		"scrollY":        0,
+		"innerWidth":       1920,
+		"innerHeight":      969,
+		"outerWidth":       1920,
+		"outerHeight":      1040,
+		"screenX":          0,
+		"screenY":          0,
+		"screenLeft":       0,
+		"screenTop":        0,
+		"pageXOffset":      0,
+		"pageYOffset":      0,
+		"scrollX":          0,
+		"scrollY":          0,
 		"devicePixelRatio": 1.0,
 
 		// Document properties
 		"document": map[string]any{
-			"charset":        "UTF-8",
-			"compatMode":     "CSS1Compat",
-			"contentType":    "text/html",
-			"hidden":         false,
+			"charset":         "UTF-8",
+			"compatMode":      "CSS1Compat",
+			"contentType":     "text/html",
+			"hidden":          false,
 			"visibilityState": "visible",
-			"hasFocus":       true,
+			"hasFocus":        true,
 		},
 
 		// Performance
@@ -276,9 +276,9 @@ func (t *turnstileSolver) buildWindow(profile map[string]any) map[string]any {
 		},
 
 		// Date/time
-		"date": dateString(),
-		"timezone": localizedTimezoneName(),
-		"timezoneOffset": new(Date).getTimezoneOffset(),
+		"date":           dateString(time.Now()),
+		"timezone":       localizedTimezoneName(),
+		"timezoneOffset": time.Now().UTC().Sub(time.Now()).Minutes(),
 
 		// Canvas fingerprint hash
 		"canvas": randomHex(16),

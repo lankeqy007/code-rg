@@ -3,10 +3,10 @@ package danapp
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -161,13 +161,13 @@ func isTransientReplayStatus(status int) bool {
 }
 
 // cookieSameSiteString converts http.SameSite to string.
-func cookieSameSiteString(sameSite int) string {
+func cookieSameSiteString(sameSite http.SameSite) string {
 	switch sameSite {
-	case 1:
+	case http.SameSiteLaxMode:
 		return "Lax"
-	case 2:
+	case http.SameSiteStrictMode:
 		return "Strict"
-	case 3:
+	case http.SameSiteNoneMode:
 		return "None"
 	default:
 		return ""

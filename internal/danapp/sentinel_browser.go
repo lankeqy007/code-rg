@@ -124,17 +124,93 @@ func applyProjectConfig(cfg *Config, rootDir string) {
 		return
 	}
 
-	var projConfig map[string]any
-	if err := decodeJSON(stripUTF8BOM(data)); err != nil {
-		// Try as the return value
-		result, e := decodeJSON(stripUTF8BOM(data))
-		if e != nil {
-			return
-		}
-		projConfig = result
+	projConfig, err := decodeJSON(stripUTF8BOM(data))
+	if err != nil {
+		return
 	}
 
 	applyWebConfig(cfg, projConfig)
+}
+
+// applyRuntimeConfigFile applies settings from config.json-style files.
+func applyRuntimeConfigFile(cfg *Config, rootDir string) {
+	for _, configPath := range []string{
+		filepath.Join(rootDir, "config.json"),
+		filepath.Join(rootDir, "config", "config.json"),
+	} {
+		if !fileExists(configPath) {
+			continue
+		}
+
+		data, err := os.ReadFile(configPath)
+		if err != nil {
+			continue
+		}
+
+		runtimeConfig, err := decodeJSON(stripUTF8BOM(data))
+		if err != nil {
+			continue
+		}
+
+		applyRuntimeConfigMap(cfg, runtimeConfig)
+		return
+	}
+}
+
+// applyRuntimeConfigMap applies config.json key/value pairs onto Config.
+func applyRuntimeConfigMap(cfg *Config, runtimeConfig map[string]any) {
+	if v := mapString(runtimeConfig, "mail_api_url"); v != "" {
+		cfg.MailAPIURL = v
+	}
+	if v := mapString(runtimeConfig, "mail_api_key"); v != "" {
+		cfg.MailAPIKey = v
+	}
+	if v := mapString(runtimeConfig, "admin_email"); v != "" {
+		cfg.AdminEmail = v
+	}
+	if v := mapString(runtimeConfig, "admin_pass"); v != "" {
+		cfg.AdminPass = v
+	}
+	if v := mapString(runtimeConfig, "email_domain"); v != "" {
+		cfg.EmailDomain = v
+	}
+	if v := mapString(runtimeConfig, "ak_file"); v != "" {
+		cfg.AKFile = v
+	}
+	if v := mapString(runtimeConfig, "rk_file"); v != "" {
+		cfg.RKFile = v
+	}
+	if v := mapString(runtimeConfig, "token_json_dir"); v != "" {
+		cfg.TokenJSONDir = v
+	}
+	if v := mapString(runtimeConfig, "upload_api_url"); v != "" {
+		cfg.UploadAPIURL = v
+	}
+	if v := mapString(runtimeConfig, "upload_api_token"); v != "" {
+		cfg.UploadAPIToken = v
+	}
+	if v := mapString(runtimeConfig, "oauth_issuer"); v != "" {
+		cfg.OAuthIssuer = v
+	}
+	if v := mapString(runtimeConfig, "oauth_client_id"); v != "" {
+		cfg.OAuthClientID = v
+	}
+	if v := mapString(runtimeConfig, "oauth_redirect_uri"); v != "" {
+		cfg.OAuthRedirectURI = v
+	}
+
+	if domains := runtimeConfig["domains"]; domains != nil && len(cfg.Domains) == 0 {
+		cfg.Domains = extractDomainsFromWebConfigData(domains)
+	}
+	if v := mapBool(runtimeConfig, "enable_oauth"); v {
+		cfg.EnableOAuth = true
+	}
+	if v := mapBool(runtimeConfig, "oauth_required"); v {
+		cfg.OAuthRequired = true
+	}
+	if v := mapBool(runtimeConfig, "upload_tokens"); v {
+		cfg.UploadTokens = true
+	}
 }
 
 // extractDomainsFromWebConfigData extracts domains from web config data.
