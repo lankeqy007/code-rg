@@ -25,11 +25,13 @@ type App struct {
 
 	rnd            *mrand.Rand
 	cloudmailToken string
+	mailBackend    string
 	tokenMu        sync.Mutex
 
 	httpClient    *http.Client
 	mailboxClient *http.Client
 	mailboxMu     sync.Mutex
+	backendMu     sync.Mutex
 
 	registerMu sync.Mutex
 	registerAt atomic.Int64
@@ -366,6 +368,23 @@ func (a *App) createCloudmailEmail(domains []string) (string, error) {
 	a.mailboxMu.Lock()
 	defer a.mailboxMu.Unlock()
 
+	backend, err := a.detectMailBackend()
+	if err != nil {
+		return "", fmt.Errorf("detect mail backend: %w", err)
+	}
+
+	domain := firstNonEmptyDomain(firstSliceValue(domains), a.cfg.EmailDomain, normalizedHostname(a.cfg.MailAPIURL))
+	if domain == "" {
+		return "", fmt.Errorf("no usable email domain")
+	}
+
+	local := randomCloudmailLocal(a.rnd)
+	email := fmt.Sprintf("%s@%s", local, domain)
+
+	if backend == "inbucket" {
+		return email, nil
+	}
+
 	// Get or refresh cloudmail token
 	if a.cloudmailToken == "" {
 		token, err := cloudmailGetToken(a)
@@ -374,15 +393,6 @@ func (a *App) createCloudmailEmail(domains []string) (string, error) {
 		}
 		a.cloudmailToken = token
 	}
-
-	// Pick a random domain
-	domain := domains[0]
-	if len(domains) > 1 {
-		domain = domains[a.rnd.Intn(len(domains))]
-	}
-
-	local := randomCloudmailLocal(a.rnd)
-	email := fmt.Sprintf("%s@%s", local, domain)
 
 	// Create the mailbox
 	if err := cloudmailCreateMailbox(a, email); err != nil {
@@ -474,6 +484,14 @@ func cloudmailPostJSON(a *App, path string, payload map[string]string) (string, 
 
 // fetchMailboxOTP fetches the latest OTP for an email address.
 func (a *App) fetchMailboxOTP(email string) (string, error) {
+	backend, err := a.detectMailBackend()
+	if err != nil {
+		return "", fmt.Errorf("detect mail backend: %w", err)
+	}
+	if backend == "inbucket" {
+		return a.fetchInbucketOTP(email)
+	}
+
 	baseURL := normalizeAPIRoot(a.cfg.MailAPIURL)
 	if baseURL == "" {
 		return "", fmt.Errorf("mail API URL not configured")
@@ -534,6 +552,132 @@ func (a *App) fetchMailboxOTP(email string) (string, error) {
 	return "", nil
 }
 
+func (a *App) detectMailBackend() (string, error) {
+	a.backendMu.Lock()
+	defer a.backendMu.Unlock()
+
+	if a.mailBackend != "" {
+		return a.mailBackend, nil
+	}
+
+	baseURL := normalizeAPIRoot(a.cfg.MailAPIURL)
+	if baseURL == "" {
+		a.mailBackend = "generic"
+		return a.mailBackend, nil
+	}
+
+	parentCtx := a.ctx
+	if parentCtx == nil {
+		parentCtx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parentCtx, 15*time.Second)
+	defer cancel()
+
+	probeURLs := []string{
+		baseURL + "/api/v1/mailbox/test",
+		baseURL + "/",
+	}
+	for _, rawURL := range probeURLs {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+		if err != nil {
+			continue
+		}
+		req.Header.Set("Accept", "application/json, text/html;q=0.9, */*;q=0.8")
+		if a.cfg.MailAPIKey != "" {
+			req.Header.Set("Authorization", "Bearer "+a.cfg.MailAPIKey)
+			req.Header.Set("X-API-Key", a.cfg.MailAPIKey)
+		}
+
+		resp, err := a.mailboxClient.Do(req)
+		if err != nil {
+			continue
+		}
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+		resp.Body.Close()
+
+		if resp.StatusCode == 200 {
+			if rawURL == baseURL+"/api/v1/mailbox/test" && strings.HasPrefix(strings.TrimSpace(string(body)), "[") {
+				a.mailBackend = "inbucket"
+				return a.mailBackend, nil
+			}
+			if strings.Contains(strings.ToLower(string(body)), "inbucket") {
+				a.mailBackend = "inbucket"
+				return a.mailBackend, nil
+			}
+		}
+	}
+
+	a.mailBackend = "generic"
+	return a.mailBackend, nil
+}
+
+func (a *App) fetchInbucketOTP(email string) (string, error) {
+	baseURL := normalizeAPIRoot(a.cfg.MailAPIURL)
+	if baseURL == "" {
+		return "", fmt.Errorf("mail API URL not configured")
+	}
+
+	local, err := mailboxLocalPart(email)
+	if err != nil {
+		return "", err
+	}
+
+	parentCtx := a.ctx
+	if parentCtx == nil {
+		parentCtx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parentCtx, 30*time.Second)
+	defer cancel()
+
+	rawURL := fmt.Sprintf("%s/api/v1/mailbox/%s/latest", baseURL, url.PathEscape(local))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("create inbucket request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := a.mailboxClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("inbucket latest message request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+	if resp.StatusCode == 404 {
+		return "", nil
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("inbucket latest message returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	return extractOTPFromMailboxResponse(body, email)
+}
+
+func mailboxLocalPart(email string) (string, error) {
+	parts := strings.SplitN(email, "@", 2)
+	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" {
+		return "", fmt.Errorf("invalid email address: %s", email)
+	}
+	return parts[0], nil
+}
+
+func firstNonEmptyDomain(candidates ...string) string {
+	for _, candidate := range candidates {
+		candidate = strings.TrimSpace(strings.ToLower(candidate))
+		if candidate != "" {
+			return candidate
+		}
+	}
+	return ""
+}
+
+func firstSliceValue(values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	return values[0]
+}
+
 func extractOTPFromMailboxResponse(data []byte, email string) (string, error) {
 	payload, err := decodeJSON(stripUTF8BOM(data))
 	if err == nil {
@@ -572,7 +716,11 @@ func otpFromAny(v any) string {
 
 // loadCloudmailDomains loads available email domains from the mail API.
 func loadCloudmailDomains(a *App) ([]string, error) {
-	return []string{a.cfg.EmailDomain}, nil
+	domains := a.cfg.effectiveDomains()
+	if len(domains) > 0 {
+		return domains, nil
+	}
+	return nil, fmt.Errorf("no domains available from config or mail API URL")
 }
 
 // resolveProxy determines the proxy URL from config or environment.

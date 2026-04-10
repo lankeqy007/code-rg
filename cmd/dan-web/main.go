@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -203,13 +204,14 @@ func (s *server) startDan(threads int) error {
 		return fmt.Errorf("dan binary not found: %s", danPath)
 	}
 
-	if len(s.cfg.Domains) == 0 {
-		return fmt.Errorf("missing domains in web_config.json/config.json; current recovered dan cannot start without domains")
+	domains := effectiveDomains(s.cfg)
+	if len(domains) == 0 {
+		return fmt.Errorf("missing domains in web_config.json/config.json and unable to infer from mail_api_url")
 	}
 
 	args := []string{
 		"--count", strconv.Itoa(threads),
-		"--domains", strings.Join(s.cfg.Domains, ","),
+		"--domains", strings.Join(domains, ","),
 	}
 	if s.cfg.RuntimeLogs {
 		args = append(args, "--runtime-logs")
@@ -426,8 +428,8 @@ func syncRuntimeConfig(root string, wc webConfig) (string, error) {
 	if wc.MailAPIKey != "" {
 		cfg["mail_api_key"] = wc.MailAPIKey
 	}
-	if len(wc.Domains) > 0 {
-		cfg["domains"] = wc.Domains
+	if domains := effectiveDomains(wc); len(domains) > 0 {
+		cfg["domains"] = domains
 	}
 	if wc.AdminEmail != "" {
 		cfg["admin_email"] = wc.AdminEmail
@@ -521,4 +523,42 @@ func formatTime(t time.Time) string {
 		return ""
 	}
 	return t.Format(time.RFC3339)
+}
+
+func effectiveDomains(cfg webConfig) []string {
+	if len(cfg.Domains) > 0 {
+		return normalizeDomains(cfg.Domains)
+	}
+	if cfg.EmailDomain != "" {
+		return normalizeDomains([]string{cfg.EmailDomain})
+	}
+	if host := normalizedHostname(cfg.MailAPIURL); host != "" {
+		return []string{host}
+	}
+	return nil
+}
+
+func normalizeDomains(domains []string) []string {
+	seen := map[string]struct{}{}
+	var out []string
+	for _, domain := range domains {
+		domain = strings.TrimSpace(strings.ToLower(domain))
+		if domain == "" {
+			continue
+		}
+		if _, ok := seen[domain]; ok {
+			continue
+		}
+		seen[domain] = struct{}{}
+		out = append(out, domain)
+	}
+	return out
+}
+
+func normalizedHostname(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(u.Hostname())
 }

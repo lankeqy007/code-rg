@@ -98,11 +98,24 @@ func (cfg Config) Validate() error {
 	if cfg.MailAPIKey == "" {
 		return fmt.Errorf("missing --mail-api-key")
 	}
-	if len(cfg.Domains) == 0 {
+	if len(cfg.effectiveDomains()) == 0 {
 		return fmt.Errorf("missing values for --domains")
 	}
 	if cfg.UploadTokens && cfg.UploadAPIURL == "" {
 		return fmt.Errorf("missing --upload-api-url when --upload-tokens is enabled")
+	}
+	return nil
+}
+
+func (cfg Config) effectiveDomains() []string {
+	if domains := normalizeDomains(cfg.Domains); len(domains) > 0 {
+		return domains
+	}
+	if cfg.EmailDomain != "" {
+		return normalizeDomains([]string{cfg.EmailDomain})
+	}
+	if host := normalizedHostname(cfg.MailAPIURL); host != "" {
+		return []string{host}
 	}
 	return nil
 }
