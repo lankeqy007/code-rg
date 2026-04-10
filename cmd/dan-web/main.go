@@ -12,7 +12,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -242,7 +241,6 @@ func (s *server) startDan(threads int) error {
 
 	cmd := exec.Command(danPath, args...)
 	cmd.Dir = s.root
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -283,9 +281,7 @@ func (s *server) stopDan() error {
 	}
 
 	pid := s.runner.cmd.Process.Pid
-	if err := syscall.Kill(-pid, syscall.SIGTERM); err != nil {
-		_ = s.runner.cmd.Process.Kill()
-	}
+	_ = s.runner.cmd.Process.Kill()
 	s.runner.lastStopAt = time.Now()
 	logf(s.state, "stop requested for dan pid=%d", pid)
 	return nil
