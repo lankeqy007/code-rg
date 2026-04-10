@@ -12,6 +12,9 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -51,11 +54,12 @@ type SessionBrowserProfile struct {
 
 // HTTPSession manages HTTP requests with browser-like headers and cookies.
 type HTTPSession struct {
-	client      *http.Client
-	baseHeaders map[string]string
-	impersonate string
-	proxy       string
-	ctx         context.Context
+	client        *http.Client
+	baseHeaders   map[string]string
+	impersonate   string
+	proxy         string
+	ctx           context.Context
+	cookieJarPath string
 
 	SessionBrowserProfile
 }
@@ -71,6 +75,7 @@ func NewHTTPSession(client *http.Client, profile SessionBrowserProfile, proxy st
 	}
 
 	s.impersonate = "chrome"
+	s.cookieJarPath = filepath.Join(os.TempDir(), fmt.Sprintf("dan-curl-cookies-%d.txt", time.Now().UnixNano()))
 	return s
 }
 
@@ -153,6 +158,16 @@ func (s *HTTPSession) JSONRequest(method, rawURL string, payload any, headers ma
 
 // singleRequest executes a single HTTP request.
 func (s *HTTPSession) singleRequest(method, rawURL string, body io.Reader, headers map[string]string) (*HTTPResponse, error) {
+	if shouldUseBrowserCurl(rawURL) {
+		resp, err := s.curlRequest(method, rawURL, body, headers)
+		if err == nil {
+			return resp, nil
+		}
+		if !isMissingBinary(err) {
+			return nil, err
+		}
+	}
+
 	req, err := http.NewRequestWithContext(s.ctx, method, rawURL, body)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
@@ -185,6 +200,204 @@ func (s *HTTPSession) singleRequest(method, rawURL string, body io.Reader, heade
 		Body:       string(respBody),
 		URL:        resp.Request.URL.String(),
 	}, nil
+}
+
+func (s *HTTPSession) curlRequest(method, rawURL string, body io.Reader, headers map[string]string) (*HTTPResponse, error) {
+	var bodyBytes []byte
+	var err error
+	if body != nil {
+		bodyBytes, err = io.ReadAll(body)
+		if err != nil {
+			return nil, fmt.Errorf("read request body: %w", err)
+		}
+	}
+
+	headerFile, err := os.CreateTemp("", "dan-curl-headers-*.txt")
+	if err != nil {
+		return nil, fmt.Errorf("create curl header file: %w", err)
+	}
+	headerPath := headerFile.Name()
+	headerFile.Close()
+	defer os.Remove(headerPath)
+
+	bodyFile, err := os.CreateTemp("", "dan-curl-body-*.txt")
+	if err != nil {
+		return nil, fmt.Errorf("create curl body file: %w", err)
+	}
+	bodyPath := bodyFile.Name()
+	bodyFile.Close()
+	defer os.Remove(bodyPath)
+
+	if _, err := os.Stat(s.cookieJarPath); err != nil {
+		_ = os.WriteFile(s.cookieJarPath, []byte(""), 0600)
+	}
+
+	args := []string{
+		"curl",
+		"--max-time", "60",
+		"--connect-timeout", "20",
+		"-sS",
+		"-L",
+		"--http2",
+		"--compressed",
+		"-X", method,
+		"-D", headerPath,
+		"-o", bodyPath,
+		"-w", "HTTP_CODE=%{http_code}\nFINAL_URL=%{url_effective}\n",
+		"-b", s.cookieJarPath,
+		"-c", s.cookieJarPath,
+	}
+	if s.proxy != "" {
+		args = append(args, "--proxy", s.proxy)
+	}
+	if len(bodyBytes) > 0 {
+		args = append(args, "--data-binary", "@-")
+	}
+	for _, pair := range orderedCurlHeaders(headers) {
+		args = append(args, "-H", pair[0]+": "+pair[1])
+	}
+	args = append(args, rawURL)
+
+	cmd := exec.CommandContext(s.ctx, "env", args...)
+	if len(bodyBytes) > 0 {
+		cmd.Stdin = bytes.NewReader(bodyBytes)
+	}
+	meta, err := cmd.Output()
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			return nil, fmt.Errorf("browser-curl request failed: %s", strings.TrimSpace(string(ee.Stderr)))
+		}
+		return nil, err
+	}
+
+	respBody, _ := os.ReadFile(bodyPath)
+	respHeaders, statusCode := parseCurlHeaderFile(headerPath)
+	finalURL := parseCurlMetaLine(string(meta), "FINAL_URL")
+	if finalURL == "" {
+		finalURL = rawURL
+	}
+	if statusCode == 0 {
+		if v := parseCurlMetaLine(string(meta), "HTTP_CODE"); v != "" {
+			fmt.Sscanf(v, "%d", &statusCode)
+		}
+	}
+
+	return &HTTPResponse{
+		StatusCode: statusCode,
+		Headers:    respHeaders,
+		Body:       string(respBody),
+		URL:        finalURL,
+	}, nil
+}
+
+func orderedCurlHeaders(headers map[string]string) [][2]string {
+	merged := map[string]string{
+		"sec-ch-ua":                 `"Not:A-Brand";v="99", "Google Chrome";v="145", "Chromium";v="145"`,
+		"sec-ch-ua-mobile":          "?0",
+		"sec-ch-ua-platform":        `"Linux"`,
+		"upgrade-insecure-requests": "1",
+		"user-agent":                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+		"accept":                    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+		"accept-language":           "en-US,en;q=0.9",
+		"accept-encoding":           "gzip, deflate, br, zstd",
+		"sec-fetch-site":            "none",
+		"sec-fetch-mode":            "navigate",
+		"sec-fetch-user":            "?1",
+		"sec-fetch-dest":            "document",
+		"cache-control":             "max-age=0",
+		"priority":                  "u=0, i",
+	}
+	for k, v := range headers {
+		merged[strings.ToLower(k)] = v
+	}
+
+	order := []string{
+		"sec-ch-ua",
+		"sec-ch-ua-mobile",
+		"sec-ch-ua-platform",
+		"upgrade-insecure-requests",
+		"user-agent",
+		"accept",
+		"accept-language",
+		"accept-encoding",
+		"sec-fetch-site",
+		"sec-fetch-mode",
+		"sec-fetch-user",
+		"sec-fetch-dest",
+		"cache-control",
+		"priority",
+		"content-type",
+		"origin",
+		"referer",
+		"x-csrf-token",
+		"authorization",
+		"oai-device-id",
+	}
+
+	var out [][2]string
+	seen := map[string]struct{}{}
+	for _, key := range order {
+		if v := strings.TrimSpace(merged[key]); v != "" {
+			out = append(out, [2]string{http.CanonicalHeaderKey(key), v})
+			seen[key] = struct{}{}
+		}
+	}
+	for k, v := range merged {
+		k = strings.ToLower(k)
+		if _, ok := seen[k]; ok || strings.TrimSpace(v) == "" {
+			continue
+		}
+		out = append(out, [2]string{http.CanonicalHeaderKey(k), v})
+	}
+	return out
+}
+
+func parseCurlHeaderFile(path string) (http.Header, int) {
+	data, _ := os.ReadFile(path)
+	blocks := strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n\n")
+	var last string
+	for _, block := range blocks {
+		block = strings.TrimSpace(block)
+		if strings.HasPrefix(block, "HTTP/") {
+			last = block
+		}
+	}
+	headers := make(http.Header)
+	if last == "" {
+		return headers, 0
+	}
+
+	lines := strings.Split(last, "\n")
+	statusCode := 0
+	if len(lines) > 0 {
+		fmt.Sscanf(lines[0], "HTTP/%*s %d", &statusCode)
+	}
+	for _, line := range lines[1:] {
+		if idx := strings.Index(line, ":"); idx > 0 {
+			key := strings.TrimSpace(line[:idx])
+			val := strings.TrimSpace(line[idx+1:])
+			headers.Add(key, val)
+		}
+	}
+	return headers, statusCode
+}
+
+func parseCurlMetaLine(meta, key string) string {
+	for _, line := range strings.Split(meta, "\n") {
+		if strings.HasPrefix(line, key+"=") {
+			return strings.TrimSpace(strings.TrimPrefix(line, key+"="))
+		}
+	}
+	return ""
+}
+
+func shouldUseBrowserCurl(rawURL string) bool {
+	host := normalizedHostname(rawURL)
+	return strings.Contains(host, "chatgpt.com") || strings.Contains(host, "auth.openai.com")
+}
+
+func isMissingBinary(err error) bool {
+	return strings.Contains(strings.ToLower(err.Error()), "executable file not found")
 }
 
 // setCookie sets a cookie for the given URL.
