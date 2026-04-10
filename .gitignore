@@ -1,0 +1,13 @@
+# runtime artifacts
+tokens/
+replay/
+*.log
+success_count.json
+
+# build artifacts
+dist/
+*.out
+*.exe
+
+# editor/system
+.DS_Store
