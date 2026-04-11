@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/enetx/g"
 	"github.com/enetx/surf"
 )
 
@@ -386,7 +387,7 @@ func newSurfHTTPClient(proxyURL string, timeout time.Duration, followRedirects b
 		Timeout(timeout)
 
 	if proxyURL = strings.TrimSpace(proxyURL); proxyURL != "" {
-		builder = builder.Proxy(proxyURL)
+		builder = builder.Proxy(g.String(proxyURL))
 	}
 	if !followRedirects {
 		builder = builder.NotFollowRedirects()
