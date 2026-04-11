@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	mrand "math/rand"
+	"net/http"
 	"net/url"
 	"path/filepath"
 	"strings"
@@ -123,7 +124,7 @@ func (s *RegisterSession) runRegister() (*TaskResult, error) {
 
 // visitHomepage visits the target homepage to establish session.
 func (s *RegisterSession) visitHomepage() error {
-	homepageURL := "https://chatgpt.com"
+	homepageURL := "https://chatgpt.com/"
 
 	headers := s.http.homepageHeaders()
 	resp, err := s.http.Request("GET", homepageURL, nil, headers)
@@ -134,7 +135,10 @@ func (s *RegisterSession) visitHomepage() error {
 	s.lastURL = resp.URL
 	s.lastStatus = resp.StatusCode
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode == http.StatusForbidden {
+		return newWholeFlowRestartError(fmt.Sprintf("%s returned 403", homepageURL))
+	}
+	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("homepage request failed: %d %s", resp.StatusCode, truncate(resp.Body, 200))
 	}
 
@@ -211,7 +215,7 @@ func (s *RegisterSession) sendOTP() error {
 		"email": s.email,
 	}
 
-	headers := s.oauthJSONHeaders()
+	headers := s.oauthJSONHeaders(otpURL)
 	resp, err := s.http.JSONRequest("POST", otpURL, payload, headers)
 	if err != nil {
 		return fmt.Errorf("send OTP request error: %w", err)
@@ -235,7 +239,7 @@ func (s *RegisterSession) requestOTPVersion2() error {
 		"email": s.email,
 	}
 
-	headers := s.oauthJSONHeaders()
+	headers := s.oauthJSONHeaders(otpURL)
 	resp, err := s.http.JSONRequest("POST", otpURL, payload, headers)
 	if err != nil {
 		return fmt.Errorf("request OTP v2 error: %w", err)
@@ -310,7 +314,7 @@ func (s *RegisterSession) validateOTP(code string) error {
 		"otp":   code,
 	}
 
-	headers := s.oauthJSONHeaders()
+	headers := s.oauthJSONHeaders(validateURL)
 	resp, err := s.http.JSONRequest("POST", validateURL, payload, headers)
 	if err != nil {
 		return fmt.Errorf("validate OTP request error: %w", err)
@@ -367,7 +371,7 @@ func (s *RegisterSession) performUnifiedSignupOAuth() error {
 func (s *RegisterSession) bootstrapOAuthSession() error {
 	url := "https://auth.openai.com/oauth/authorize/bootstrap"
 
-	headers := s.oauthJSONHeaders()
+	headers := s.oauthJSONHeaders(url)
 	resp, err := s.http.JSONRequest("POST", url, map[string]string{}, headers)
 	if err != nil {
 		return fmt.Errorf("bootstrap request error: %w", err)
@@ -383,7 +387,7 @@ func (s *RegisterSession) bootstrapOAuthSession() error {
 func (s *RegisterSession) authorize() error {
 	url := "https://auth.openai.com/authorize/continue"
 
-	headers := s.oauthJSONHeaders()
+	headers := s.oauthJSONHeaders(url)
 	resp, err := s.http.JSONRequest("POST", url, map[string]string{
 		"email": s.email,
 	}, headers)
@@ -406,7 +410,7 @@ func (s *RegisterSession) authorize() error {
 func (s *RegisterSession) postAuthorizeContinue() error {
 	url := "https://auth.openai.com/authorize/continue"
 
-	headers := s.oauthJSONHeaders()
+	headers := s.oauthJSONHeaders(url)
 	resp, err := s.http.JSONRequest("POST", url, map[string]string{
 		"continue_url": s.callbackURL,
 	}, headers)
@@ -446,7 +450,7 @@ func (s *RegisterSession) exchangeOAuthCode() error {
 		payload["code_verifier"] = s.pkceVerifier
 	}
 
-	headers := s.oauthJSONHeaders()
+	headers := s.oauthJSONHeaders(tokenURL)
 	resp, err := s.http.JSONRequest("POST", tokenURL, payload, headers)
 	if err != nil {
 		return fmt.Errorf("exchange code error: %w", err)
@@ -488,7 +492,7 @@ func (s *RegisterSession) completeOAuthAccountSetup() error {
 func (s *RegisterSession) oauthSubmitWorkspaceAndOrg() error {
 	url := "https://auth.openai.com/api/accounts/workspace/select"
 
-	headers := s.oauthJSONHeaders()
+	headers := s.oauthJSONHeaders(url)
 	resp, err := s.http.JSONRequest("POST", url, map[string]string{}, headers)
 	if err != nil {
 		return err
@@ -561,7 +565,7 @@ func (s *RegisterSession) createAccount() error {
 		"sentinel_token": sentinelToken,
 	}
 
-	headers := s.oauthJSONHeaders()
+	headers := s.oauthJSONHeaders(createURL)
 	resp, err := s.http.JSONRequest("POST", createURL, payload, headers)
 	if err != nil {
 		return fmt.Errorf("create account error: %w", err)
@@ -586,7 +590,7 @@ func (s *RegisterSession) signin() error {
 		"password": s.password,
 	}
 
-	headers := s.oauthJSONHeaders()
+	headers := s.oauthJSONHeaders(signinURL)
 	resp, err := s.http.JSONRequest("POST", signinURL, payload, headers)
 	if err != nil {
 		return fmt.Errorf("signin error: %w", err)
@@ -671,20 +675,12 @@ func (s *RegisterSession) callbackAndGetSession() error {
 }
 
 // oauthJSONHeaders builds browser-like JSON request headers for OAuth endpoints.
-func (s *RegisterSession) oauthJSONHeaders() map[string]string {
-	targetURL := s.lastURL
+func (s *RegisterSession) oauthJSONHeaders(targetURL string) map[string]string {
 	if targetURL == "" {
 		targetURL = "https://auth.openai.com/"
 	}
 
-	headers := s.http.navigationHeaders(targetURL, s.lastURL)
-	headers["Accept"] = "application/json, text/plain, */*"
-	headers["Content-Type"] = "application/json"
-	headers["Origin"] = "https://auth.openai.com"
-
-	if s.lastURL != "" {
-		headers["Referer"] = s.lastURL
-	}
+	headers := s.http.fetchHeaders(targetURL, s.lastURL)
 	for k, v := range s.http.cloneHeaders() {
 		if v == "" || strings.Contains(k, ".") {
 			continue

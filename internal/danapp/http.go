@@ -13,10 +13,11 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/enetx/surf"
 )
 
 // HTTPResponse wraps an HTTP response for logging.
@@ -56,7 +57,6 @@ type SessionBrowserProfile struct {
 type HTTPSession struct {
 	client        *http.Client
 	baseHeaders   map[string]string
-	impersonate   string
 	proxy         string
 	ctx           context.Context
 	cookieJarPath string
@@ -65,53 +65,111 @@ type HTTPSession struct {
 }
 
 // NewHTTPSession creates a new HTTP session with browser profile.
-func NewHTTPSession(client *http.Client, profile SessionBrowserProfile, proxy string, rnd *mrand.Rand) *HTTPSession {
+func NewHTTPSession(client *http.Client, profile SessionBrowserProfile, proxy string, rnd *mrand.Rand) (*HTTPSession, error) {
+	_ = client
+	_ = rnd
+
+	surfClient, err := newSurfHTTPClient(proxy, 60*time.Second, false)
+	if err != nil {
+		return nil, err
+	}
+
 	s := &HTTPSession{
-		client:                client,
+		client:                surfClient,
 		proxy:                 proxy,
 		ctx:                   context.Background(),
 		SessionBrowserProfile: profile,
 		baseHeaders:           make(map[string]string),
 	}
 
-	s.impersonate = "chrome"
 	s.cookieJarPath = filepath.Join(os.TempDir(), fmt.Sprintf("dan-curl-cookies-%d.txt", time.Now().UnixNano()))
-	return s
+
+	if profile.UserAgent != "" {
+		s.baseHeaders["User-Agent"] = profile.UserAgent
+	}
+	if profile.AcceptLanguage != "" {
+		s.baseHeaders["Accept-Language"] = profile.AcceptLanguage
+	}
+	if profile.SecCHUA != "" {
+		s.baseHeaders["Sec-CH-UA"] = profile.SecCHUA
+	}
+	if profile.SecCHUAMobile != "" {
+		s.baseHeaders["Sec-CH-UA-Mobile"] = profile.SecCHUAMobile
+	}
+	if profile.SecCHUAPlatform != "" {
+		s.baseHeaders["Sec-CH-UA-Platform"] = profile.SecCHUAPlatform
+	}
+	if profile.SecCHUAArch != "" {
+		s.baseHeaders["Sec-CH-UA-Arch"] = profile.SecCHUAArch
+	}
+	if profile.SecCHUABitness != "" {
+		s.baseHeaders["Sec-CH-UA-Bitness"] = profile.SecCHUABitness
+	}
+	if profile.ChromeFullVersion != "" {
+		s.baseHeaders["Sec-CH-UA-Full-Version"] = profile.ChromeFullVersion
+		s.baseHeaders["Sec-CH-UA-Full-Version-List"] = fmt.Sprintf(`"Not:A-Brand";v="99.0.0.0", "Google Chrome";v="%s", "Chromium";v="%s"`, profile.ChromeFullVersion, profile.ChromeFullVersion)
+	}
+	if profile.SecCHUAPlatformVersion != "" {
+		s.baseHeaders["Sec-CH-UA-Platform-Version"] = profile.SecCHUAPlatformVersion
+	}
+	if profile.DeviceID != "" {
+		s.baseHeaders["oai-device-id"] = profile.DeviceID
+	}
+
+	return s, nil
 }
 
 // homepageHeaders returns headers for a homepage request.
 func (s *HTTPSession) homepageHeaders() map[string]string {
-	h := s.navigationHeaders("", "")
+	h := s.pageHeaders("https://chatgpt.com/", "")
 	h["Accept"] = s.HomepageAccept
-	h["Sec-Fetch-Dest"] = "document"
-	h["Sec-Fetch-Mode"] = "navigate"
-	h["Sec-Fetch-User"] = "?1"
-	h["Upgrade-Insecure-Requests"] = "1"
-	delete(h, "Referer")
 	return h
 }
 
 // navigationHeaders returns headers for a navigation request.
 func (s *HTTPSession) navigationHeaders(targetURL, referer string) map[string]string {
 	h := map[string]string{
-		"Accept":             s.NavigationAccept,
-		"Accept-Language":    s.AcceptLanguage,
-		"Cache-Control":      s.CacheControl,
-		"Priority":           s.Priority,
-		"Sec-CH-UA":          s.SecCHUA,
-		"Sec-CH-UA-Mobile":   s.SecCHUAMobile,
-		"Sec-CH-UA-Platform": s.SecCHUAPlatform,
-		"Sec-Fetch-Dest":     "empty",
-		"Sec-Fetch-Mode":     "cors",
-		"Sec-Fetch-Site":     secFetchSiteValue(targetURL, referer),
+		"Accept":                      s.NavigationAccept,
+		"Accept-Language":             s.AcceptLanguage,
+		"Sec-CH-UA":                   s.SecCHUA,
+		"Sec-CH-UA-Mobile":            s.SecCHUAMobile,
+		"Sec-CH-UA-Platform":          s.SecCHUAPlatform,
+		"Sec-CH-UA-Full-Version-List": s.secCHUAFullVersionList(),
+		"Sec-Fetch-Dest":              "document",
+		"Sec-Fetch-Mode":              "navigate",
+		"Sec-Fetch-Site":              secFetchSiteValue(targetURL, referer),
+		"Sec-Fetch-User":              firstNonEmpty(s.SecFetchUser, "?1"),
+		"Upgrade-Insecure-Requests":   firstNonEmpty(s.UpgradeInsecureRequest, "1"),
+		"User-Agent":                  s.UserAgent,
 	}
 
 	if referer != "" {
 		h["Referer"] = referer
 	}
 
+	if s.CacheControl != "" {
+		h["Cache-Control"] = s.CacheControl
+	}
+	if s.Priority != "" {
+		h["Priority"] = s.Priority
+	}
 	if s.Pragma != "" {
 		h["Pragma"] = s.Pragma
+	}
+	if s.SecCHUAArch != "" {
+		h["Sec-CH-UA-Arch"] = s.SecCHUAArch
+	}
+	if s.SecCHUABitness != "" {
+		h["Sec-CH-UA-Bitness"] = s.SecCHUABitness
+	}
+	if s.SecCHUAPlatformVersion != "" {
+		h["Sec-CH-UA-Platform-Version"] = s.SecCHUAPlatformVersion
+	}
+	if s.ChromeFullVersion != "" {
+		h["Sec-CH-UA-Full-Version"] = s.ChromeFullVersion
+	}
+	if s.DeviceID != "" {
+		h["oai-device-id"] = s.DeviceID
 	}
 
 	return h
@@ -120,6 +178,58 @@ func (s *HTTPSession) navigationHeaders(targetURL, referer string) map[string]st
 // pageHeaders returns headers for an API page request.
 func (s *HTTPSession) pageHeaders(targetURL, referer string) map[string]string {
 	return s.navigationHeaders(targetURL, referer)
+}
+
+// fetchHeaders returns browser-like headers for XHR/fetch JSON requests.
+func (s *HTTPSession) fetchHeaders(targetURL, referer string) map[string]string {
+	h := map[string]string{
+		"Accept":                      "application/json, text/plain, */*",
+		"Accept-Language":             s.AcceptLanguage,
+		"Content-Type":                "application/json",
+		"Sec-CH-UA":                   s.SecCHUA,
+		"Sec-CH-UA-Mobile":            s.SecCHUAMobile,
+		"Sec-CH-UA-Platform":          s.SecCHUAPlatform,
+		"Sec-CH-UA-Full-Version-List": s.secCHUAFullVersionList(),
+		"Sec-Fetch-Dest":              "empty",
+		"Sec-Fetch-Mode":              "cors",
+		"Sec-Fetch-Site":              secFetchSiteValue(targetURL, referer),
+		"User-Agent":                  s.UserAgent,
+	}
+
+	if referer != "" {
+		h["Referer"] = referer
+	}
+
+	targetOrigin := originFromURL(targetURL)
+	if targetOrigin != "" {
+		h["Origin"] = targetOrigin
+	}
+	if s.CacheControl != "" {
+		h["Cache-Control"] = s.CacheControl
+	}
+	if s.Pragma != "" {
+		h["Pragma"] = s.Pragma
+	}
+	if s.Priority != "" {
+		h["Priority"] = s.Priority
+	}
+	if s.SecCHUAArch != "" {
+		h["Sec-CH-UA-Arch"] = s.SecCHUAArch
+	}
+	if s.SecCHUABitness != "" {
+		h["Sec-CH-UA-Bitness"] = s.SecCHUABitness
+	}
+	if s.SecCHUAPlatformVersion != "" {
+		h["Sec-CH-UA-Platform-Version"] = s.SecCHUAPlatformVersion
+	}
+	if s.ChromeFullVersion != "" {
+		h["Sec-CH-UA-Full-Version"] = s.ChromeFullVersion
+	}
+	if s.DeviceID != "" {
+		h["oai-device-id"] = s.DeviceID
+	}
+
+	return h
 }
 
 // Request makes an HTTP request with the given parameters.
@@ -158,22 +268,19 @@ func (s *HTTPSession) JSONRequest(method, rawURL string, payload any, headers ma
 
 // singleRequest executes a single HTTP request.
 func (s *HTTPSession) singleRequest(method, rawURL string, body io.Reader, headers map[string]string) (*HTTPResponse, error) {
-	if shouldUseBrowserCurl(rawURL) {
-		resp, err := s.curlRequest(method, rawURL, body, headers)
-		if err == nil {
-			return resp, nil
-		}
-		if !isMissingBinary(err) {
-			return nil, err
-		}
-	}
-
 	req, err := http.NewRequestWithContext(s.ctx, method, rawURL, body)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 
-	// Apply headers
+	for k, v := range s.cloneHeaders() {
+		if v == "" || strings.Contains(k, ".") {
+			continue
+		}
+		req.Header.Set(k, v)
+	}
+
+	// Apply request-specific headers
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
@@ -200,204 +307,6 @@ func (s *HTTPSession) singleRequest(method, rawURL string, body io.Reader, heade
 		Body:       string(respBody),
 		URL:        resp.Request.URL.String(),
 	}, nil
-}
-
-func (s *HTTPSession) curlRequest(method, rawURL string, body io.Reader, headers map[string]string) (*HTTPResponse, error) {
-	var bodyBytes []byte
-	var err error
-	if body != nil {
-		bodyBytes, err = io.ReadAll(body)
-		if err != nil {
-			return nil, fmt.Errorf("read request body: %w", err)
-		}
-	}
-
-	headerFile, err := os.CreateTemp("", "dan-curl-headers-*.txt")
-	if err != nil {
-		return nil, fmt.Errorf("create curl header file: %w", err)
-	}
-	headerPath := headerFile.Name()
-	headerFile.Close()
-	defer os.Remove(headerPath)
-
-	bodyFile, err := os.CreateTemp("", "dan-curl-body-*.txt")
-	if err != nil {
-		return nil, fmt.Errorf("create curl body file: %w", err)
-	}
-	bodyPath := bodyFile.Name()
-	bodyFile.Close()
-	defer os.Remove(bodyPath)
-
-	if _, err := os.Stat(s.cookieJarPath); err != nil {
-		_ = os.WriteFile(s.cookieJarPath, []byte(""), 0600)
-	}
-
-	args := []string{
-		"curl",
-		"--max-time", "60",
-		"--connect-timeout", "20",
-		"-sS",
-		"-L",
-		"--http2",
-		"--compressed",
-		"-X", method,
-		"-D", headerPath,
-		"-o", bodyPath,
-		"-w", "HTTP_CODE=%{http_code}\nFINAL_URL=%{url_effective}\n",
-		"-b", s.cookieJarPath,
-		"-c", s.cookieJarPath,
-	}
-	if s.proxy != "" {
-		args = append(args, "--proxy", s.proxy)
-	}
-	if len(bodyBytes) > 0 {
-		args = append(args, "--data-binary", "@-")
-	}
-	for _, pair := range orderedCurlHeaders(headers) {
-		args = append(args, "-H", pair[0]+": "+pair[1])
-	}
-	args = append(args, rawURL)
-
-	cmd := exec.CommandContext(s.ctx, "env", args...)
-	if len(bodyBytes) > 0 {
-		cmd.Stdin = bytes.NewReader(bodyBytes)
-	}
-	meta, err := cmd.Output()
-	if err != nil {
-		if ee, ok := err.(*exec.ExitError); ok {
-			return nil, fmt.Errorf("browser-curl request failed: %s", strings.TrimSpace(string(ee.Stderr)))
-		}
-		return nil, err
-	}
-
-	respBody, _ := os.ReadFile(bodyPath)
-	respHeaders, statusCode := parseCurlHeaderFile(headerPath)
-	finalURL := parseCurlMetaLine(string(meta), "FINAL_URL")
-	if finalURL == "" {
-		finalURL = rawURL
-	}
-	if statusCode == 0 {
-		if v := parseCurlMetaLine(string(meta), "HTTP_CODE"); v != "" {
-			fmt.Sscanf(v, "%d", &statusCode)
-		}
-	}
-
-	return &HTTPResponse{
-		StatusCode: statusCode,
-		Headers:    respHeaders,
-		Body:       string(respBody),
-		URL:        finalURL,
-	}, nil
-}
-
-func orderedCurlHeaders(headers map[string]string) [][2]string {
-	merged := map[string]string{
-		"sec-ch-ua":                 `"Not:A-Brand";v="99", "Google Chrome";v="145", "Chromium";v="145"`,
-		"sec-ch-ua-mobile":          "?0",
-		"sec-ch-ua-platform":        `"Linux"`,
-		"upgrade-insecure-requests": "1",
-		"user-agent":                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
-		"accept":                    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-		"accept-language":           "en-US,en;q=0.9",
-		"accept-encoding":           "gzip, deflate, br, zstd",
-		"sec-fetch-site":            "none",
-		"sec-fetch-mode":            "navigate",
-		"sec-fetch-user":            "?1",
-		"sec-fetch-dest":            "document",
-		"cache-control":             "max-age=0",
-		"priority":                  "u=0, i",
-	}
-	for k, v := range headers {
-		merged[strings.ToLower(k)] = v
-	}
-
-	order := []string{
-		"sec-ch-ua",
-		"sec-ch-ua-mobile",
-		"sec-ch-ua-platform",
-		"upgrade-insecure-requests",
-		"user-agent",
-		"accept",
-		"accept-language",
-		"accept-encoding",
-		"sec-fetch-site",
-		"sec-fetch-mode",
-		"sec-fetch-user",
-		"sec-fetch-dest",
-		"cache-control",
-		"priority",
-		"content-type",
-		"origin",
-		"referer",
-		"x-csrf-token",
-		"authorization",
-		"oai-device-id",
-	}
-
-	var out [][2]string
-	seen := map[string]struct{}{}
-	for _, key := range order {
-		if v := strings.TrimSpace(merged[key]); v != "" {
-			out = append(out, [2]string{http.CanonicalHeaderKey(key), v})
-			seen[key] = struct{}{}
-		}
-	}
-	for k, v := range merged {
-		k = strings.ToLower(k)
-		if _, ok := seen[k]; ok || strings.TrimSpace(v) == "" {
-			continue
-		}
-		out = append(out, [2]string{http.CanonicalHeaderKey(k), v})
-	}
-	return out
-}
-
-func parseCurlHeaderFile(path string) (http.Header, int) {
-	data, _ := os.ReadFile(path)
-	blocks := strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n\n")
-	var last string
-	for _, block := range blocks {
-		block = strings.TrimSpace(block)
-		if strings.HasPrefix(block, "HTTP/") {
-			last = block
-		}
-	}
-	headers := make(http.Header)
-	if last == "" {
-		return headers, 0
-	}
-
-	lines := strings.Split(last, "\n")
-	statusCode := 0
-	if len(lines) > 0 {
-		fmt.Sscanf(lines[0], "HTTP/%*s %d", &statusCode)
-	}
-	for _, line := range lines[1:] {
-		if idx := strings.Index(line, ":"); idx > 0 {
-			key := strings.TrimSpace(line[:idx])
-			val := strings.TrimSpace(line[idx+1:])
-			headers.Add(key, val)
-		}
-	}
-	return headers, statusCode
-}
-
-func parseCurlMetaLine(meta, key string) string {
-	for _, line := range strings.Split(meta, "\n") {
-		if strings.HasPrefix(line, key+"=") {
-			return strings.TrimSpace(strings.TrimPrefix(line, key+"="))
-		}
-	}
-	return ""
-}
-
-func shouldUseBrowserCurl(rawURL string) bool {
-	host := normalizedHostname(rawURL)
-	return strings.Contains(host, "chatgpt.com") || strings.Contains(host, "auth.openai.com")
-}
-
-func isMissingBinary(err error) bool {
-	return strings.Contains(strings.ToLower(err.Error()), "executable file not found")
 }
 
 // setCookie sets a cookie for the given URL.
@@ -468,12 +377,61 @@ func newPlainHTTPClient(proxyURL string) *http.Client {
 	}
 }
 
+func newSurfHTTPClient(proxyURL string, timeout time.Duration, followRedirects bool) (*http.Client, error) {
+	builder := surf.NewClient().
+		Builder().
+		Impersonate().
+		Chrome().
+		Session().
+		Timeout(timeout)
+
+	if proxyURL = strings.TrimSpace(proxyURL); proxyURL != "" {
+		builder = builder.Proxy(proxyURL)
+	}
+	if !followRedirects {
+		builder = builder.NotFollowRedirects()
+	}
+
+	result := builder.Build()
+	if result.IsErr() {
+		return nil, fmt.Errorf("create surf client: %w", result.Err())
+	}
+
+	client := result.Unwrap().Std()
+	if client == nil {
+		return nil, fmt.Errorf("surf std client is nil")
+	}
+
+	client.Timeout = timeout
+
+	return client, nil
+}
+
+func (s *HTTPSession) secCHUAFullVersionList() string {
+	if s.ChromeFullVersion == "" {
+		return ""
+	}
+	return fmt.Sprintf(`"Not:A-Brand";v="99.0.0.0", "Google Chrome";v="%s", "Chromium";v="%s"`, s.ChromeFullVersion, s.ChromeFullVersion)
+}
+
 // secFetchSiteValue determines the Sec-Fetch-Site header value.
 func secFetchSiteValue(targetURL, referer string) string {
-	if referer == "" {
+	targetHost := normalizedHostname(targetURL)
+	if targetHost == "" {
 		return "none"
 	}
-	return "same-origin"
+
+	refererHost := normalizedHostname(referer)
+	if refererHost == "" {
+		return "none"
+	}
+	if strings.EqualFold(targetHost, refererHost) {
+		return "same-origin"
+	}
+	if sameSiteHost(targetURL, referer) {
+		return "same-site"
+	}
+	return "cross-site"
 }
 
 // isRedirectStatus returns true if the status code indicates a redirect.
@@ -558,4 +516,12 @@ func resolveURL(base, ref string) string {
 		return ref
 	}
 	return baseURL.ResolveReference(refURL).String()
+}
+
+func originFromURL(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return ""
+	}
+	return u.Scheme + "://" + u.Host
 }

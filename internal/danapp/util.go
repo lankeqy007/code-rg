@@ -72,25 +72,17 @@ func generatePassword(rnd *mrand.Rand) string {
 
 // randomBrowserSessionProfile creates a random browser fingerprint.
 func randomBrowserSessionProfile(rnd *mrand.Rand) SessionBrowserProfile {
-	chromeVersion := 120 + rnd.Intn(10) // Chrome 120-129
-	fullVersion := fmt.Sprintf("%d.0.%d.%d", chromeVersion, 5000+rnd.Intn(5000), rnd.Intn(200))
-
-	platform := "Windows"
-	platformVersion := "15.0.0"
-	if rnd.Intn(2) == 0 {
-		platform = "macOS"
-		platformVersion = "14.0.0"
-	}
+	fullVersion := "145.0.0.0"
 
 	return SessionBrowserProfile{
-		UserAgent:              fmt.Sprintf("Mozilla/5.0 (%s; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/%s Safari/537.36", platform, fullVersion),
-		SecCHUA:                buildSecCHUAFullVersionList(chromeVersion, fullVersion),
+		UserAgent:              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+		SecCHUA:                `"Not:A-Brand";v="99", "Google Chrome";v="145", "Chromium";v="145"`,
 		SecCHUAMobile:          "?0",
-		SecCHUAPlatform:        fmt.Sprintf(`"%s"`, platform),
+		SecCHUAPlatform:        `"Windows"`,
 		SecCHUAArch:            `"x86"`,
 		SecCHUABitness:         `"64"`,
 		ChromeFullVersion:      fullVersion,
-		SecCHUAPlatformVersion: fmt.Sprintf(`"%s"`, platformVersion),
+		SecCHUAPlatformVersion: `"10.0.0"`,
 		AcceptLanguage:         randomAcceptLanguage(rnd),
 		HomepageAccept:         homepageAcceptHeaders(),
 		NavigationAccept:       navigationAcceptHeaders(),

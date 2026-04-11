@@ -238,7 +238,18 @@ func (a *App) newRegisterSession(idx int, email string, domains []string) *Regis
 
 	// Create HTTP session with browser profile
 	browserProfile := randomBrowserSessionProfile(rnd)
-	s.http = NewHTTPSession(a.httpClient, browserProfile, a.cfg.Proxy, rnd)
+	httpSession, err := NewHTTPSession(a.httpClient, browserProfile, a.cfg.Proxy, rnd)
+	if err != nil {
+		s.print("[HTTP] failed to initialize surf session: %v", err)
+		httpSession = &HTTPSession{
+			client:                newPlainHTTPClient(resolveProxy(a.cfg)),
+			proxy:                 a.cfg.Proxy,
+			ctx:                   context.Background(),
+			SessionBrowserProfile: browserProfile,
+			baseHeaders:           make(map[string]string),
+		}
+	}
+	s.http = httpSession
 	s.http.ctx = a.ctx
 
 	return s
@@ -246,28 +257,41 @@ func (a *App) newRegisterSession(idx int, email string, domains []string) *Regis
 
 // registerOne registers a single account.
 func (a *App) registerOne(idx int, domains []string) (*TaskResult, error) {
-	// Create cloudmail email
-	email, err := a.createCloudmailEmail(domains)
-	if err != nil {
-		return nil, fmt.Errorf("create email: %w", err)
+	var lastErr error
+	for attempt := 1; attempt <= 10; attempt++ {
+		// Create cloudmail email
+		email, err := a.createCloudmailEmail(domains)
+		if err != nil {
+			return nil, fmt.Errorf("create email: %w", err)
+		}
+
+		password := generatePassword(a.rnd)
+		name := randomName(a.rnd)
+		birthdate := randomBirthdate(a.rnd)
+
+		session := a.newRegisterSession(idx, email, domains)
+		session.password = password
+		session.name = name
+		session.birthdate = birthdate
+
+		result, err := session.runRegister()
+		if err == nil {
+			return result, nil
+		}
+
+		lastErr = err
+		if !shouldRestartWholeFlow(err) || IsBatchStop() || attempt >= 10 {
+			return nil, err
+		}
+
+		fmt.Fprintf(os.Stderr, "[whole-flow restart] account %d attempt %d/10: %v\n", idx+1, attempt, err)
 	}
 
-	password := generatePassword(a.rnd)
-	name := randomName(a.rnd)
-	birthdate := randomBirthdate(a.rnd)
-
-	session := a.newRegisterSession(idx, email, domains)
-	session.password = password
-	session.name = name
-	session.birthdate = birthdate
-
-	// Run the registration flow
-	result, err := session.runRegister()
-	if err != nil {
-		return nil, err
+	if lastErr != nil {
+		return nil, lastErr
 	}
 
-	return result, nil
+	return nil, fmt.Errorf("register failed without detailed error")
 }
 
 // registerOneLegacy registers using the legacy (non-OAuth) flow.
